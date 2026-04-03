@@ -7,6 +7,7 @@ class VoiceConfig(BaseModel):
     tone: str
     speed: float
     accent: str
+    instructions: str = ""  # delivery instructions for gpt-4o-audio-preview
 
 
 class PipelineResult(BaseModel):

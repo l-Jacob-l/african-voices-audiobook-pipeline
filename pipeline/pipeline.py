@@ -11,7 +11,7 @@ def run_history_pipeline(region_hint: str = "", output_name: str = "history_narr
     print("STEP 1 — Discovering sources...")
     sources = SourceDiscoveryAgent().run(region_hint=region_hint)
     for s in sources:
-        print(f"  [{s.access}] {s.title} — {s.author}")
+        print(f"  [{s.access}] {s.title} - {s.author}")
 
     print("\nSTEP 2 — Validating sources...")
     validated = SourceValidationAgent().run(sources)
