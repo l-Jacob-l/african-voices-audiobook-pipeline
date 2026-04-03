@@ -27,11 +27,28 @@ class PDFExtractionAgent(BaseAgent):
             print(f"  Extracting: {source.title} ({source.pdf_link})")
             try:
                 raw_text = self._download_and_extract(source.pdf_link)
+                if not self._is_english(raw_text):
+                    print(f"  Skipping — text is not in English")
+                    continue
                 return self._clean(raw_text, source)
             except Exception as e:
                 print(f"  Failed ({e}), trying next source...")
 
         raise ValueError("All CONFIRMED sources failed PDF extraction.")
+
+    # Common non-English function words — presence of several strongly indicates non-English
+    _NON_ENGLISH_MARKERS = [
+        "est ", "les ", "des ", "une ", "dans ", "pour ", "que ", "qui ",  # French
+        "der ", "die ", "das ", "und ", "ein ", "ist ", "nicht ",          # German
+        "los ", "las ", "una ", "del ", "por ", "que ", "con ",            # Spanish
+        "della ", "degli ", "nella ", "sono ", "questo ",                  # Italian
+        "de ", "het ", "een ", "van ", "niet ", "met ",                    # Dutch
+    ]
+
+    def _is_english(self, text: str) -> bool:
+        sample = text[:1000].lower()
+        hits = sum(1 for marker in self._NON_ENGLISH_MARKERS if marker in sample)
+        return hits < 4
 
     def _download_and_extract(self, url: str) -> str:
         response = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
@@ -41,21 +58,27 @@ class PDFExtractionAgent(BaseAgent):
         pages = reader.pages[:_MAX_PAGES]
         return "\n\n".join(page.extract_text() or "" for page in pages)
 
+    _REFUSAL_MARKERS = [
+        "i'm unable", "i am unable", "i cannot", "i'm sorry",
+        "i apologize", "would you like", "instead?", "however,",
+        "as an ai", "i don't have access",
+    ]
+
     def _clean(self, raw_text: str, source: SourceRecord) -> str:
-        prompt = f"""You are preparing a historical African text for audiobook narration.
+        prompt = f"""You are a text editor preparing a raw PDF extract for audiobook narration.
+
+Your ONLY job is to clean the raw text below. You must output the cleaned text and nothing else.
+Do NOT comment, refuse, summarize, explain, or add any words of your own.
+Do NOT say "I'm unable" or anything similar — just clean and return the text.
+
+Cleaning rules:
+- Remove page numbers, headers, footers, and footnotes
+- Fix obvious OCR errors (broken words, "l" mistaken for "1", etc.)
+- Preserve all proper names, place names, and culturally specific terms exactly
+- Do not summarize or paraphrase — reproduce the full content faithfully
+- Output continuous readable prose only
 
 Source: "{source.title}" by {source.author} ({source.year}), {source.region}
-
-The text below was extracted from a PDF and may contain OCR artifacts, page numbers,
-headers, footnotes, or garbled characters. Clean it into readable, continuous prose
-that preserves the original voice and meaning faithfully.
-
-Rules:
-- Remove page numbers, headers, footers, and footnotes
-- Fix obvious OCR errors (e.g. "l" mistaken for "1", broken words)
-- Preserve all proper names, place names, and culturally specific terms exactly
-- Do not summarize or paraphrase — keep the full content
-- Return only the cleaned text, no commentary
 
 Raw text:
 {raw_text[:8000]}"""
@@ -64,4 +87,11 @@ Raw text:
             model=GPT_MODEL,
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.choices[0].message.content
+        cleaned = response.choices[0].message.content or ""
+
+        # If GPT refused or gave a meta-response, fall back to raw text
+        cleaned_lower = cleaned.lower()
+        if any(marker in cleaned_lower for marker in self._REFUSAL_MARKERS):
+            return raw_text.strip()
+
+        return cleaned
