@@ -38,3 +38,11 @@ class HistoryPipelineResult(BaseModel):
     script: str
     voice_config: VoiceConfig
     audio_path: str
+
+
+class AudiobookResult(BaseModel):
+    intro: str
+    script: str
+    audio_path: str
+    srt_path: str
+    video_path: str

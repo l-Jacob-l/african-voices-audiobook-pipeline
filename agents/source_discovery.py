@@ -58,7 +58,7 @@ Return only the JSON array."""
         try:
             resp = requests.get(
                 _IA_SEARCH,
-                params={"q": query, "output": "json", "rows": 8},
+                params={"q": f"{query} AND mediatype:texts", "output": "json", "rows": 8},
                 headers=_HEADERS,
                 timeout=15,
             )
