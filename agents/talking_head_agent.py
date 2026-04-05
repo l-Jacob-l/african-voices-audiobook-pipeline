@@ -36,11 +36,11 @@ class TalkingHeadAgent(BaseAgent):
         print("  Animating talking head via D-ID...")
         video_url = self._animate(image_url, audio_path)
 
-        raw_video_path = os.path.join(OUTPUT_DIR, f"{output_name}_raw.mp4")
+        raw_video_path = f"{output_name}_raw.mp4"
         self._download(video_url, raw_video_path)
 
         print("  Burning in subtitles...")
-        final_path = os.path.join(OUTPUT_DIR, f"{output_name}.mp4")
+        final_path = f"{output_name}.mp4"
         self._burn_subtitles(raw_video_path, srt_path, final_path)
         os.remove(raw_video_path)
 
@@ -64,7 +64,7 @@ class TalkingHeadAgent(BaseAgent):
 
     def _animate(self, image_url: str, audio_path: str) -> str:
         # D-ID limit ~10MB — trim to first 30s into a clean temp file
-        trimmed_path = os.path.join(OUTPUT_DIR, "did_upload_temp.mp3")
+        trimmed_path = os.path.join(os.path.dirname(audio_path), "did_upload_temp.mp3")
         trim_cmd = [
             FFMPEG_PATH, "-y", "-i", audio_path,
             "-t", "30", "-ac", "1", "-ar", "22050", trimmed_path

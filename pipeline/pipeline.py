@@ -1,5 +1,6 @@
 import os
 import re
+import datetime
 import requests
 from bs4 import BeautifulSoup
 from agents.script_formatter import ScriptFormatterAgent
@@ -19,6 +20,14 @@ def _slug(text: str) -> str:
     return re.sub(r"\s+", "_", safe.strip())[:80] or "audiobook"
 
 
+def _run_dir(name: str) -> str:
+    """Create and return a unique folder for this run: output/<name>_<timestamp>/"""
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = os.path.join("output", f"{name}_{ts}")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
 def run_audiobook_from_url(
     url: str,
     author: str,
@@ -32,7 +41,8 @@ def run_audiobook_from_url(
         source="URL", pdf_link=url, access="CONFIRMED",
     )
     output_name = _slug(title)
-    os.makedirs("output", exist_ok=True)
+    run_dir = _run_dir(output_name)
+    print(f"Run folder: {run_dir}")
 
     print("STEP 1 — Fetching text...")
     resp = requests.get(url, timeout=30)
@@ -60,7 +70,7 @@ def run_audiobook_from_url(
     body_script = ScriptFormatterAgent().run(excerpt)
     full_script = intro_text + "\n\n" + body_script
 
-    script_path = f"output/{output_name}.txt"
+    script_path = os.path.join(run_dir, f"{output_name}.txt")
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(full_script)
     print(f"  Script saved to: {script_path}")
@@ -70,11 +80,11 @@ def run_audiobook_from_url(
     print(voice_config.model_dump_json(indent=2))
 
     print("\nSTEP 5 — Generating audio...")
-    audio_path = TTSAgent().run(full_script, voice_config, output_name)
+    audio_path = TTSAgent().run(full_script, voice_config, output_name, output_dir=run_dir)
     print(f"  Audio saved to: {audio_path}")
 
     print("\nSTEP 6 — Generating subtitles (Whisper)...")
-    srt_path = f"output/{output_name}.srt"
+    srt_path = os.path.join(run_dir, f"{output_name}.srt")
     TranscriptSyncAgent().run(audio_path, srt_path)
     print(f"  SRT saved to: {srt_path}")
 
@@ -82,7 +92,7 @@ def run_audiobook_from_url(
     video_path = TalkingHeadAgent().run(
         author=author, region=region, year=year,
         audio_path=audio_path, srt_path=srt_path,
-        output_name=output_name,
+        output_name=os.path.join(run_dir, output_name),
     )
     print(f"  Video saved to: {video_path}")
 
@@ -96,6 +106,8 @@ def run_audiobook_from_url(
 
 
 def run_history_pipeline(region_hint: str = "", output_name: str = "history_narration") -> HistoryPipelineResult:
+    run_dir = _run_dir(output_name)
+    print(f"Run folder: {run_dir}")
     print("STEP 1 — Discovering sources...")
     sources = SourceDiscoveryAgent().run(region_hint=region_hint)
     for s in sources:
@@ -120,13 +132,13 @@ def run_history_pipeline(region_hint: str = "", output_name: str = "history_narr
     voice_config = VoicePlanningAgent().run(extracted_text)
     print(voice_config.model_dump_json(indent=2))
 
-    script_path = f"output/{output_name}.txt"
+    script_path = os.path.join(run_dir, f"{output_name}.txt")
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(script)
     print(f"\nScript saved to: {script_path}")
 
     print("\nSTEP 6 — Generating audio...")
-    audio_path = TTSAgent().run(script, voice_config, output_name)
+    audio_path = TTSAgent().run(script, voice_config, output_name, output_dir=run_dir)
     print(f"  Audio saved to: {audio_path}")
 
     return HistoryPipelineResult(
@@ -140,6 +152,9 @@ def run_history_pipeline(region_hint: str = "", output_name: str = "history_narr
 
 
 def run_pipeline(text: str, output_name: str = "output_audio") -> PipelineResult:
+    run_dir = _run_dir(output_name)
+    print(f"Run folder: {run_dir}")
+
     print("STEP 1 — Formatting script...")
     script = ScriptFormatterAgent().run(text)
     print(script)
@@ -149,7 +164,7 @@ def run_pipeline(text: str, output_name: str = "output_audio") -> PipelineResult
     print(voice_config.model_dump_json(indent=2))
 
     print("\nSTEP 3 — Generating audio...")
-    audio_path = TTSAgent().run(script, voice_config, output_name)
+    audio_path = TTSAgent().run(script, voice_config, output_name, output_dir=run_dir)
     print(f"Audio saved to: {audio_path}")
 
     return PipelineResult(script=script, voice_config=voice_config, audio_path=audio_path)

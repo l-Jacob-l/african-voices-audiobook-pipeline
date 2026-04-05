@@ -31,9 +31,9 @@ def _split_sentences(text: str, max_chars: int) -> list[str]:
 
 
 class TTSAgent(BaseAgent):
-    def run(self, script: str, voice_config: VoiceConfig, output_name: str = "output_audio") -> str:
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        output_path = os.path.join(OUTPUT_DIR, f"{output_name}.mp3")
+    def run(self, script: str, voice_config: VoiceConfig, output_name: str = "output_audio", output_dir: str = OUTPUT_DIR) -> str:
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"{output_name}.mp3")
 
         chunks = _split_sentences(script, _CHUNK_SIZE)
         print(f"  Generating {len(chunks)} audio chunks...")
