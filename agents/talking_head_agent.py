@@ -33,16 +33,21 @@ class TalkingHeadAgent(BaseAgent):
         print("  Generating author portrait...")
         image_url = self._generate_portrait(author, region, year)
 
-        print("  Animating talking head via D-ID...")
+        print("  Animating talking head via D-ID (30s loop base)...")
         video_url = self._animate(image_url, audio_path)
 
-        raw_video_path = f"{output_name}_raw.mp4"
-        self._download(video_url, raw_video_path)
+        did_video_path = f"{output_name}_did.mp4"
+        self._download(video_url, did_video_path)
+
+        print("  Looping video to full audio duration and replacing audio track...")
+        looped_path = f"{output_name}_looped.mp4"
+        self._loop_with_audio(did_video_path, audio_path, looped_path)
+        os.remove(did_video_path)
 
         print("  Burning in subtitles...")
         final_path = f"{output_name}.mp4"
-        self._burn_subtitles(raw_video_path, srt_path, final_path)
-        os.remove(raw_video_path)
+        self._burn_subtitles(looped_path, srt_path, final_path)
+        os.remove(looped_path)
 
         return final_path
 
@@ -128,6 +133,23 @@ class TalkingHeadAgent(BaseAgent):
         with open(path, "wb") as f:
             for chunk in resp.iter_content(8192):
                 f.write(chunk)
+
+    def _loop_with_audio(self, video_path: str, audio_path: str, output_path: str) -> None:
+        """Loop the D-ID video to match the full audio duration, replacing the audio track."""
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-stream_loop", "-1", "-i", video_path,  # loop video indefinitely
+            "-i", audio_path,                          # full audio
+            "-map", "0:v",                             # video from looped source
+            "-map", "1:a",                             # audio from full narration
+            "-shortest",                               # stop when audio ends
+            "-c:v", "libx264", "-crf", "18",
+            "-c:a", "aac", "-b:a", "192k",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg loop failed:\n{result.stderr}")
 
     def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str) -> None:
         # Escape path separators for ffmpeg subtitles filter on Windows
