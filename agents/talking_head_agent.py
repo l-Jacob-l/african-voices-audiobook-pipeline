@@ -8,17 +8,22 @@ from core.config import D_ID_API_KEY, GPT_MODEL, OUTPUT_DIR, FFMPEG_PATH
 _D_ID_HEADERS = {
     "Authorization": f"Basic {D_ID_API_KEY}",
     "Content-Type": "application/json",
+    "accept": "application/json",
 }
 _POLL_INTERVAL = 5
-_MAX_WAIT = 300  # seconds
+_MAX_WAIT = 600  # seconds
+
+# D-ID text input limit per talk is ~1000 chars.
+# We split the script and stitch multiple talks together.
+_D_ID_CHUNK_SIZE = 900
 
 
 class TalkingHeadAgent(BaseAgent):
     """
-    Three steps:
-    1. DALL-E generates a portrait of the author
-    2. D-ID animates it lip-synced to the audio
-    3. ffmpeg burns in the SRT subtitles
+    1. DALL-E generates a photorealistic portrait of the author
+    2. D-ID animates it with Abeo (Nigerian English male, Microsoft) reading the script
+    3. Multiple D-ID clips are stitched together with ffmpeg
+    4. SRT subtitles are burned in
     """
 
     def run(
@@ -26,76 +31,79 @@ class TalkingHeadAgent(BaseAgent):
         author: str,
         region: str,
         year: str,
-        audio_path: str,
+        script: str,
         srt_path: str,
         output_name: str,
     ) -> str:
         print("  Generating author portrait...")
         image_url = self._generate_portrait(author, region, year)
 
-        print("  Animating talking head via D-ID (30s loop base)...")
-        video_url = self._animate(image_url, audio_path)
+        # Split script into chunks D-ID can handle
+        chunks = self._split_chunks(script, _D_ID_CHUNK_SIZE)
+        print(f"  Generating {len(chunks)} D-ID video clip(s)...")
 
-        did_video_path = f"{output_name}_did.mp4"
-        self._download(video_url, did_video_path)
+        clip_paths = []
+        for i, chunk in enumerate(chunks, 1):
+            print(f"  Clip {i}/{len(chunks)}: {chunk[:60]}...")
+            video_url = self._animate_chunk(image_url, chunk)
+            clip_path = f"{output_name}_clip{i}.mp4"
+            self._download(video_url, clip_path)
+            clip_paths.append(clip_path)
 
-        print("  Looping video to full audio duration and replacing audio track...")
-        looped_path = f"{output_name}_looped.mp4"
-        self._loop_with_audio(did_video_path, audio_path, looped_path)
-        os.remove(did_video_path)
+        print("  Stitching clips...")
+        stitched_path = f"{output_name}_stitched.mp4"
+        self._stitch(clip_paths, stitched_path)
+        for p in clip_paths:
+            os.remove(p)
 
         print("  Burning in subtitles...")
         final_path = f"{output_name}.mp4"
-        self._burn_subtitles(looped_path, srt_path, final_path)
-        os.remove(looped_path)
+        self._burn_subtitles(stitched_path, srt_path, final_path)
+        os.remove(stitched_path)
 
         return final_path
 
     def _generate_portrait(self, author: str, region: str, year: str) -> str:
         prompt = (
-            f"A realistic painted portrait of {author}, a person from {region} "
+            f"A photorealistic portrait photograph of {author}, a person from {region} "
             f"circa {year}. Traditional clothing of the region and era. "
-            f"Dignified, looking slightly toward the camera. Warm natural lighting. "
-            f"No text. Museum quality oil painting style."
+            f"Dignified, looking directly at the camera. Natural warm lighting. "
+            f"Close-up face and shoulders. Highly detailed skin texture. "
+            f"No text, no watermark."
         )
         response = self.client.images.generate(
             model="dall-e-3",
             prompt=prompt,
             size="1024x1024",
-            quality="standard",
+            quality="hd",
             n=1,
         )
         return response.data[0].url
 
-    def _animate(self, image_url: str, audio_path: str) -> str:
-        # D-ID limit ~10MB — trim to first 30s into a clean temp file
-        trimmed_path = os.path.join(os.path.dirname(audio_path), "did_upload_temp.mp3")
-        trim_cmd = [
-            FFMPEG_PATH, "-y", "-i", audio_path,
-            "-t", "30", "-ac", "1", "-ar", "22050", trimmed_path
-        ]
-        result = subprocess.run(trim_cmd, capture_output=True)
-        if result.returncode != 0 or not os.path.exists(trimmed_path):
-            raise RuntimeError(f"ffmpeg trim failed: {result.stderr.decode()}")
+    def _split_chunks(self, text: str, max_chars: int) -> list[str]:
+        import re
+        sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
+        chunks, current = [], ""
+        for sentence in sentences:
+            if current and len(current) + len(sentence) + 1 > max_chars:
+                chunks.append(current.strip())
+                current = sentence
+            else:
+                current = (current + " " + sentence).strip() if current else sentence
+        if current:
+            chunks.append(current.strip())
+        return chunks
 
-        # Upload audio to D-ID
-        with open(trimmed_path, "rb") as f:
-            upload_resp = requests.post(
-                "https://api.d-id.com/audios",
-                headers={"Authorization": f"Basic {D_ID_API_KEY}"},
-                files={"audio": ("narration.mp3", f, "audio/mpeg")},
-            )
-        os.remove(trimmed_path)
-        if not upload_resp.ok:
-            raise RuntimeError(f"D-ID upload failed {upload_resp.status_code}: {upload_resp.text}")
-        audio_url = upload_resp.json()["url"]
-
-        # Create talk
+    def _animate_chunk(self, image_url: str, text: str) -> str:
         payload = {
             "source_url": image_url,
             "script": {
-                "type": "audio",
-                "audio_url": audio_url,
+                "type": "text",
+                "input": text,
+                "provider": {
+                    "type": "microsoft",
+                    "voice_id": "en-NG-AbeoNeural",
+                },
             },
             "config": {"result_format": "mp4"},
         }
@@ -107,7 +115,6 @@ class TalkingHeadAgent(BaseAgent):
         create_resp.raise_for_status()
         talk_id = create_resp.json()["id"]
 
-        # Poll until done
         elapsed = 0
         while elapsed < _MAX_WAIT:
             time.sleep(_POLL_INTERVAL)
@@ -134,25 +141,31 @@ class TalkingHeadAgent(BaseAgent):
             for chunk in resp.iter_content(8192):
                 f.write(chunk)
 
-    def _loop_with_audio(self, video_path: str, audio_path: str, output_path: str) -> None:
-        """Loop the D-ID video to match the full audio duration, replacing the audio track."""
+    def _stitch(self, clip_paths: list[str], output_path: str) -> None:
+        if len(clip_paths) == 1:
+            import shutil
+            shutil.copy(clip_paths[0], output_path)
+            return
+
+        # Write concat list
+        list_path = output_path + "_list.txt"
+        with open(list_path, "w") as f:
+            for p in clip_paths:
+                f.write(f"file '{os.path.abspath(p)}'\n")
+
         cmd = [
             FFMPEG_PATH, "-y",
-            "-stream_loop", "-1", "-i", video_path,  # loop video indefinitely
-            "-i", audio_path,                          # full audio
-            "-map", "0:v",                             # video from looped source
-            "-map", "1:a",                             # audio from full narration
-            "-shortest",                               # stop when audio ends
-            "-c:v", "libx264", "-crf", "18",
-            "-c:a", "aac", "-b:a", "192k",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
             output_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
+        os.remove(list_path)
         if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg loop failed:\n{result.stderr}")
+            raise RuntimeError(f"ffmpeg stitch failed:\n{result.stderr}")
 
     def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str) -> None:
-        # Escape path separators for ffmpeg subtitles filter on Windows
         srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
         cmd = [
             FFMPEG_PATH, "-y",
@@ -169,4 +182,4 @@ class TalkingHeadAgent(BaseAgent):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed:\n{result.stderr}")
+            raise RuntimeError(f"ffmpeg subtitle burn failed:\n{result.stderr}")

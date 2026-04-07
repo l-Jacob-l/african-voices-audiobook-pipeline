@@ -88,10 +88,11 @@ def run_audiobook_from_url(
     TranscriptSyncAgent().run(audio_path, srt_path)
     print(f"  SRT saved to: {srt_path}")
 
-    print("\nSTEP 7 — Generating talking head video...")
+    print("\nSTEP 7 — Generating talking head video (Abeo, Nigerian English)...")
     video_path = TalkingHeadAgent().run(
         author=author, region=region, year=year,
-        audio_path=audio_path, srt_path=srt_path,
+        script=full_script,
+        srt_path=srt_path,
         output_name=os.path.join(run_dir, output_name),
     )
     print(f"  Video saved to: {video_path}")
